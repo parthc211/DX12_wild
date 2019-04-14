@@ -10,6 +10,10 @@
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
 #include "d3dx12.h"
+#include <string>
+
+// this will only call release if an object exists (prevents exceptions calling release on non existant objects)
+#define SAFE_RELEASE(p) { if ((p)) { (p)->Release(); (p) = 0; } }
 
 // Handle to the window
 HWND hwnd = NULL;
@@ -27,6 +31,9 @@ int Height = 600;
 // is window full screen?
 bool FullScreen = false;
 
+// we will exit the program when this becomes false
+bool Running = true;
+
 // direct3d stuff
 const int frameBufferCount = 3; // number of buffers we want, 2 for double buffering, 3 for triple buffering
 
@@ -42,7 +49,7 @@ ID3D12Resource* renderTargets[frameBufferCount]; // number of render targets equ
 
 ID3D12CommandAllocator* commandAllocator[frameBufferCount]; // we want enough allocator for each buffer * number of threads (we only have one thread)
 
-ID3D12GraphicsCommandList* CommandList; // a command list we can record commands into, then execute them to render the frame
+ID3D12GraphicsCommandList* commandList; // a command list we can record commands into, then execute them to render the frame
 
 ID3D12Fence* fence[frameBufferCount]; // an object that is locked while our command list is being executed by the gpu.
 									  // We need as many as we have allocators (more if we want to know when the gpu is finished with an asset)
