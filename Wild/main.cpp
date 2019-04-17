@@ -13,11 +13,11 @@ int WINAPI WinMain(HINSTANCE hInstance,
 	int nShowCmd)
 {
 	// create the window
-	if (!InitializeWindow(hInstance, nShowCmd, Width, Height, FullScreen))
+	if (!InitializeWindow(hInstance, nShowCmd, FullScreen))
 	{
 		MessageBox(0, L"Window Initialization - Failed",
 			L"Error", MB_OK);
-		return 0;
+		return 1;
 	}
 
 	// initialize direct3d
@@ -46,7 +46,6 @@ int WINAPI WinMain(HINSTANCE hInstance,
 
 bool InitializeWindow(HINSTANCE hInstance,
 	int ShowWnd,
-	int width, int height,
 	bool fullscreen)
 {
 	if (fullscreen)
@@ -56,8 +55,8 @@ bool InitializeWindow(HINSTANCE hInstance,
 		MONITORINFO mi = { sizeof(mi) };
 		GetMonitorInfo(hmon, &mi);
 
-		width = mi.rcMonitor.right - mi.rcMonitor.left;
-		height = mi.rcMonitor.bottom - mi.rcMonitor.top;
+		Width = mi.rcMonitor.right - mi.rcMonitor.left;
+		Height = mi.rcMonitor.bottom - mi.rcMonitor.top;
 	}
 
 	WNDCLASSEX wc;
@@ -87,7 +86,7 @@ bool InitializeWindow(HINSTANCE hInstance,
 		WindowTitle,
 		WS_OVERLAPPEDWINDOW,
 		CW_USEDEFAULT, CW_USEDEFAULT,
-		width, height,
+		Width, Height,
 		NULL,
 		NULL,
 		hInstance,
@@ -154,6 +153,7 @@ LRESULT CALLBACK WndProc(HWND hwnd,
 		return 0;
 
 	case WM_DESTROY:
+		Running = false;
 		PostQuitMessage(0);
 		return 0;
 	}
@@ -330,9 +330,6 @@ bool InitD3D()
 	{
 		return false;
 	}
-
-	// command lists are created in the recording state. our main loop will set it up for recording again so close it now
-	commandList->Close();
 
 	// -- Create a Fence & Fence Event -- //
 
@@ -594,7 +591,7 @@ void UpdatePipeline()
 	// but in this tutorial we are only clearing the rtv, and do not actually need
 	// anything but an initial default pipeline, which is what we get by setting
 	// the second paramerter to NULL
-	hr = commandList->Reset(commandAllocator[frameIndex], NULL);
+	hr = commandList->Reset(commandAllocator[frameIndex], pipelineStateObject);
 	if (FAILED(hr))
 	{
 		Running = false;

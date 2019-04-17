@@ -67,7 +67,6 @@ int rtvDescriptorSize; // size of the rtv descriptor on the device (all front an
 // create a window
 bool InitializeWindow(HINSTANCE hInstance,
 	int ShowWnd,
-	int width, int height,
 	bool fullscreen);
 
 // main application loop
