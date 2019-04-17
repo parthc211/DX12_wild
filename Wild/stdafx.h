@@ -105,3 +105,6 @@ D3D12_VERTEX_BUFFER_VIEW vertexBufferView; // a structure containing a pointer t
 										   // the total size of the buffer, and the size of each element (vertex)
 
 D3D12_INDEX_BUFFER_VIEW indexBufferView; // a structure holding information about the index buffer
+
+ID3D12Resource* depthStencilBuffer; // This is the memory for our depth buffer. it will also be used for a stencil buffer
+ID3D12DescriptorHeap* dsDescriptorHeap; // This is a heap for our depth/stencil buffer descriptor
