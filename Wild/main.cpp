@@ -1,12 +1,10 @@
 #include "stdafx.h"
 
-using namespace DirectX; // we will be using the directxmath library
-
 struct Vertex
 {
-	Vertex(float x, float y, float z, float r, float g, float b, float a) : pos(x, y, z), color(r, g, b, a) {}
+	Vertex(float x, float y, float z, float u, float v) : pos(x, y, z), texCoord(u, v) {}
 	XMFLOAT3 pos;
-	XMFLOAT4 color;
+	XMFLOAT2 texCoord;
 };
 
 int WINAPI WinMain(HINSTANCE hInstance,
@@ -211,6 +209,7 @@ bool InitD3D()
 
 	if (!adapterFound)
 	{
+		Running = false;
 		return false;
 	}
 
@@ -222,6 +221,7 @@ bool InitD3D()
 	);
 	if (FAILED(hr))
 	{
+		Running = false;
 		return false;
 	}
 
@@ -235,6 +235,7 @@ bool InitD3D()
 
 	if (FAILED(hr))
 	{
+		Running = false;
 		return false;
 	}
 
@@ -284,6 +285,7 @@ bool InitD3D()
 	hr = device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&rtvDescriptorHeap));
 	if (FAILED(hr))
 	{
+		Running = false;
 		return false;
 	}
 
@@ -304,6 +306,7 @@ bool InitD3D()
 		hr = swapChain->GetBuffer(i, IID_PPV_ARGS(&renderTargets[i]));
 		if (FAILED(hr))
 		{
+			Running = false;
 			return false;
 		}
 
@@ -320,6 +323,7 @@ bool InitD3D()
 		hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocator[i]));
 		if (FAILED(hr))
 		{
+			Running = false;
 			return false;
 		}
 	}
@@ -327,9 +331,10 @@ bool InitD3D()
 	// -- Create a Command List -- //
 
 	// create the command list with the first allocator
-	hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocator[0], NULL, IID_PPV_ARGS(&commandList));
+	hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocator[frameIndex], NULL, IID_PPV_ARGS(&commandList));
 	if (FAILED(hr))
 	{
+		Running = false;
 		return false;
 	}
 
@@ -341,6 +346,7 @@ bool InitD3D()
 		hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence[i]));
 		if (FAILED(hr))
 		{
+			Running = false;
 			return false;
 		}
 		fenceValue[i] = 0; // set the initial fence value to 0
@@ -350,6 +356,7 @@ bool InitD3D()
 	fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 	if (fenceEvent == nullptr)
 	{
+		Running = false;
 		return false;
 	}
 
@@ -360,27 +367,64 @@ bool InitD3D()
 	rootCBVDescriptor.RegisterSpace = 0;
 	rootCBVDescriptor.ShaderRegister = 0;
 
-	// create a root parameter and fill it out
-	D3D12_ROOT_PARAMETER rootParameters[1]; // only one parameter right now
+	// create a descriptor range (descriptor table) and fill it out
+	// this is a range of descriptors inside a descriptor heap
+	D3D12_DESCRIPTOR_RANGE descriptorTableRanges[1]; // only one range right now
+	descriptorTableRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; // this is a range of shader resource views (descriptors)
+	descriptorTableRanges[0].NumDescriptors = 1; // we only have one texture right now, so the range is only 1
+	descriptorTableRanges[0].BaseShaderRegister = 0; // start index of the shader registers in the range
+	descriptorTableRanges[0].RegisterSpace = 0; // space 0. can usually be zero
+	descriptorTableRanges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND; // this appends the range to the end of the root signature descriptor tables
+
+	// create a descriptor table
+	D3D12_ROOT_DESCRIPTOR_TABLE descriptorTable;
+	descriptorTable.NumDescriptorRanges = _countof(descriptorTableRanges); // we only have one range
+	descriptorTable.pDescriptorRanges = &descriptorTableRanges[0]; // the pointer to the beginning of our ranges array
+
+	// create a root parameter for the root descriptor and fill it out
+	D3D12_ROOT_PARAMETER rootParameters[2]; // two root parameters
 	rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV; // this is a constant buffer view root descriptor
 	rootParameters[0].Descriptor= rootCBVDescriptor; // this is our descriptor for this root paramter
 	rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX; // our pixel shader will be the only shader accesssing this parameter for now
 
+	// fill out the parameter for our descriptor table. Remember it's a good idea to sort parameters by frequency of change. Our constant
+	// buffer will be changed multiple times per frame, while our descriptor table will not be changed at all (in this case)
+	rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; // this is a descriptor table
+	rootParameters[1].DescriptorTable = descriptorTable; // this is our descriptor table for this root parameter
+	rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL; // our pixel shader will be the only shader accessing this parameter for now
+
+	// create a static sampler
+	D3D12_STATIC_SAMPLER_DESC sampler = {};
+	sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+	sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+	sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+	sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+	sampler.MipLODBias = 0;
+	sampler.MaxAnisotropy = 0;
+	sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+	sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+	sampler.MinLOD = 0.0f;
+	sampler.MaxLOD = D3D12_FLOAT32_MAX;
+	sampler.ShaderRegister = 0;
+	sampler.RegisterSpace = 0;
+	sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
 	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
-	rootSignatureDesc.Init(_countof(rootParameters), // we have 1 root parameter
-		rootParameters, // a pointer to th beginning of our parameter array
-		0,
-		nullptr,
+	rootSignatureDesc.Init(_countof(rootParameters), // we have 2 root parameters
+		rootParameters, // a pointer to the beginning of our parameters array
+		1, // we have one static sampler
+		&sampler, // a pointer to our static sampler (array)
 		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT | // we can deny shader stages here for better performance
 		D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
 		D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
-		D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS |
-		D3D12_ROOT_SIGNATURE_FLAG_DENY_PIXEL_SHADER_ROOT_ACCESS);
+		D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS);
 
+	ID3DBlob* errorBuff;
 	ID3DBlob* signature;
-	hr = D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, nullptr);
+	hr = D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &errorBuff);
 	if (FAILED(hr))
 	{
+		OutputDebugStringA((char*)errorBuff->GetBufferPointer());
 		return false;
 	}
 
@@ -401,7 +445,6 @@ bool InitD3D()
 
 	// compile vertex shader
 	ID3DBlob* vertexShader; // d3d blob for holding vertex shader bytecode
-	ID3DBlob* errorBuff; // a buffer holding the error data if any
 	hr = D3DCompileFromFile(L"VertexShader.hlsl",
 		nullptr,
 		nullptr,
@@ -415,6 +458,7 @@ bool InitD3D()
 	if (FAILED(hr))
 	{
 		OutputDebugStringA((char*)errorBuff->GetBufferPointer());
+		Running = false;
 		return false;
 	}
 
@@ -439,6 +483,7 @@ bool InitD3D()
 	if (FAILED(hr))
 	{
 		OutputDebugStringA((char*)errorBuff->GetBufferPointer());
+		Running = false;
 		return false;
 	}
 
@@ -455,7 +500,7 @@ bool InitD3D()
 	D3D12_INPUT_ELEMENT_DESC inputLayout[] =
 	{
 		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-		{ "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+		{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
 	};
 
 	// fill out an input layout description structure
@@ -479,7 +524,7 @@ bool InitD3D()
 
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {}; // a structure to define a pso
 	psoDesc.InputLayout = inputLayoutDesc; // the structure describing our input layout
-	psoDesc.pRootSignature = rootSignature; // the root signature that describe the input data this pso needs
+	psoDesc.pRootSignature = rootSignature; // the root signature that describes the input data this pso needs
 	psoDesc.VS = vertexShaderBytecode; // structure describing where to find the vertex shader bytecode and how large it is
 	psoDesc.PS = pixelShaderBytecode; // same as VS but for pixel shader
 	psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE; // type of topology we are drawing
@@ -495,6 +540,7 @@ bool InitD3D()
 	hr = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pipelineStateObject));
 	if (FAILED(hr))
 	{
+		Running = false;
 		return false;
 	}
 
@@ -504,40 +550,40 @@ bool InitD3D()
 	Vertex vList[] =
 	{
 		// front face
-		{ -0.5f,  0.5f, -0.5f, 1.0f, 0.0f, 0.0f, 1.0f },
-		{  0.5f, -0.5f, -0.5f, 1.0f, 0.0f, 1.0f, 1.0f },
-		{ -0.5f, -0.5f, -0.5f, 0.0f, 0.0f, 1.0f, 1.0f },
-		{  0.5f,  0.5f, -0.5f, 0.0f, 1.0f, 0.0f, 1.0f },
+		{ -0.5f,  0.5f, -0.5f, 0.0f, 0.0f },
+		{  0.5f, -0.5f, -0.5f, 1.0f, 1.0f },
+		{ -0.5f, -0.5f, -0.5f, 0.0f, 1.0f },
+		{  0.5f,  0.5f, -0.5f, 1.0f, 0.0f },
 
 		// right side face
-		{  0.5f, -0.5f, -0.5f, 1.0f, 0.0f, 0.0f, 1.0f },
-		{  0.5f,  0.5f,  0.5f, 1.0f, 0.0f, 1.0f, 1.0f },
-		{  0.5f, -0.5f,  0.5f, 0.0f, 0.0f, 1.0f, 1.0f },
-		{  0.5f,  0.5f, -0.5f, 0.0f, 1.0f, 0.0f, 1.0f },
+		{  0.5f, -0.5f, -0.5f, 0.0f, 1.0f },
+		{  0.5f,  0.5f,  0.5f, 1.0f, 0.0f },
+		{  0.5f, -0.5f,  0.5f, 1.0f, 1.0f },
+		{  0.5f,  0.5f, -0.5f, 0.0f, 0.0f },
 
 		// left side face
-		{ -0.5f,  0.5f,  0.5f, 1.0f, 0.0f, 0.0f, 1.0f },
-		{ -0.5f, -0.5f, -0.5f, 1.0f, 0.0f, 1.0f, 1.0f },
-		{ -0.5f, -0.5f,  0.5f, 0.0f, 0.0f, 1.0f, 1.0f },
-		{ -0.5f,  0.5f, -0.5f, 0.0f, 1.0f, 0.0f, 1.0f },
+		{ -0.5f,  0.5f,  0.5f, 0.0f, 0.0f },
+		{ -0.5f, -0.5f, -0.5f, 1.0f, 1.0f },
+		{ -0.5f, -0.5f,  0.5f, 0.0f, 1.0f },
+		{ -0.5f,  0.5f, -0.5f, 1.0f, 0.0f },
 
 		// back face
-		{  0.5f,  0.5f,  0.5f, 1.0f, 0.0f, 0.0f, 1.0f },
-		{ -0.5f, -0.5f,  0.5f, 1.0f, 0.0f, 1.0f, 1.0f },
-		{  0.5f, -0.5f,  0.5f, 0.0f, 0.0f, 1.0f, 1.0f },
-		{ -0.5f,  0.5f,  0.5f, 0.0f, 1.0f, 0.0f, 1.0f },
+		{  0.5f,  0.5f,  0.5f, 0.0f, 0.0f },
+		{ -0.5f, -0.5f,  0.5f, 1.0f, 1.0f },
+		{  0.5f, -0.5f,  0.5f, 0.0f, 1.0f },
+		{ -0.5f,  0.5f,  0.5f, 1.0f, 0.0f },
 
 		// top face
-		{ -0.5f,  0.5f, -0.5f, 1.0f, 0.0f, 0.0f, 1.0f },
-		{ 0.5f,  0.5f,  0.5f, 1.0f, 0.0f, 1.0f, 1.0f },
-		{ 0.5f,  0.5f, -0.5f, 0.0f, 0.0f, 1.0f, 1.0f },
-		{ -0.5f,  0.5f,  0.5f, 0.0f, 1.0f, 0.0f, 1.0f },
+		{ -0.5f,  0.5f, -0.5f, 0.0f, 1.0f },
+		{  0.5f,  0.5f,  0.5f, 1.0f, 0.0f },
+		{  0.5f,  0.5f, -0.5f, 1.0f, 1.0f },
+		{ -0.5f,  0.5f,  0.5f, 0.0f, 0.0f },
 
 		// bottom face
-		{  0.5f, -0.5f,  0.5f, 1.0f, 0.0f, 0.0f, 1.0f },
-		{ -0.5f, -0.5f, -0.5f, 1.0f, 0.0f, 1.0f, 1.0f },
-		{  0.5f, -0.5f, -0.5f, 0.0f, 0.0f, 1.0f, 1.0f },
-		{ -0.5f, -0.5f,  0.5f, 0.0f, 1.0f, 0.0f, 1.0f },
+		{  0.5f, -0.5f,  0.5f, 0.0f, 0.0f },
+		{ -0.5f, -0.5f, -0.5f, 1.0f, 1.0f },
+		{  0.5f, -0.5f, -0.5f, 0.0f, 1.0f },
+		{ -0.5f, -0.5f,  0.5f, 1.0f, 0.0f }
 	};
 
 	int vBufferSize = sizeof(vList);
@@ -554,6 +600,11 @@ bool InitD3D()
 										// from the upload heap to this heap
 		nullptr,
 		IID_PPV_ARGS(&vertexBuffer));
+	if (FAILED(hr))
+	{
+		Running = false;
+		return false;
+	}
 
 	// we can give resource heaps a name so when we debug with the graphics debugger we know what resource we are looking at
 	vertexBuffer->SetName(L"Vertex Buffer Resource Heap");
@@ -569,6 +620,11 @@ bool InitD3D()
 		D3D12_RESOURCE_STATE_GENERIC_READ, // GPU will read from this buffer and copy its contents to the default heap
 		nullptr,
 		IID_PPV_ARGS(&vBufferUploadHeap));
+	if (FAILED(hr))
+	{
+		Running = false;
+		return false;
+	}
 	vBufferUploadHeap->SetName(L"Vertex Buffer Upload Resource Heap");
 
 	// store vertex buffer in upload heap
@@ -626,6 +682,11 @@ bool InitD3D()
 		D3D12_RESOURCE_STATE_COPY_DEST, // start in the copy destination state
 		nullptr, // optimized clear value must be null for this type of resource
 		IID_PPV_ARGS(&indexBuffer));
+	if (FAILED(hr))
+	{
+		Running = false;
+		return false;
+	}
 
 	// we can give resource heaps a name so when we debug with the graphics debugger we know what resource we are looking at
 	vertexBuffer->SetName(L"Index Buffer Resource Heap");
@@ -639,6 +700,11 @@ bool InitD3D()
 		D3D12_RESOURCE_STATE_GENERIC_READ, // GPU will read from this buffer and copy its contents to default heap
 		nullptr,
 		IID_PPV_ARGS(&iBufferUploadHeap));
+	if (FAILED(hr))
+	{
+		Running = false;
+		return false;
+	}
 	vBufferUploadHeap->SetName(L"Index Buffer Upload Resource Heap");
 
 	// store vertex buffer in upload heap
@@ -665,6 +731,7 @@ bool InitD3D()
 	if (FAILED(hr))
 	{
 		Running = false;
+		return false;
 	}
 
 	D3D12_DEPTH_STENCIL_VIEW_DESC depthStencilDesc = {};
@@ -684,6 +751,11 @@ bool InitD3D()
 		D3D12_RESOURCE_STATE_DEPTH_WRITE,
 		&depthOptimizedClearValue,
 		IID_PPV_ARGS(&depthStencilBuffer));
+	if (FAILED(hr))
+	{
+		Running = false;
+		return false;
+	}
 	dsDescriptorHeap->SetName(L"Depth/Stencil Resource Heap");
 
 	device->CreateDepthStencilView(depthStencilBuffer, &depthStencilDesc, dsDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
@@ -708,10 +780,16 @@ bool InitD3D()
 		hr = device->CreateCommittedResource(
 			&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD), // this heap will be used to upload the constant buffer data
 			D3D12_HEAP_FLAG_NONE, // no flags
-			&CD3DX12_RESOURCE_DESC::Buffer(1024 * 64), // size of the resource heap. Must be a multiple of 64KB for single-textures and constant buffers
+			&CD3DX12_RESOURCE_DESC::Buffer(D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT), // size of the resource heap. Must be a multiple of 64KB for single-textures and constant buffers
 			D3D12_RESOURCE_STATE_GENERIC_READ, // will be data that is read from so we keep it in the generic read state
 			nullptr, // we do not have use an optimized clear value for constant buffers
 			IID_PPV_ARGS(&constantBufferUploadHeaps[i]));
+		if (FAILED(hr))
+		{
+			Running = false;
+			return false;
+		}
+
 		constantBufferUploadHeaps[i]->SetName(L"Constant Buffer Upload Resource Heap");
 
 		ZeroMemory(&cbPerObject, sizeof(cbPerObject));
@@ -727,6 +805,89 @@ bool InitD3D()
 		memcpy(cbvGPUAddress[i] + ConstantBufferPerObjectAlignedSize, &cbPerObject, sizeof(cbPerObject)); // cube2's constant buffer data
 	}
 
+	// load the image, create a texture resource and descriptor heap
+
+	// Load the image from file
+	D3D12_RESOURCE_DESC textureDesc;
+	int imageBytesPerRow;
+	BYTE* imageData;
+	int imageSize = LoadImageDataFromFile(&imageData, textureDesc, L"braynzar.jpg", imageBytesPerRow);
+
+	// make sure we have data
+	if (imageSize <= 0)
+	{
+		Running = false;
+		return false;
+	}
+
+	// create a default heap where the upload will copy its contents into (contents being the texture)
+	hr = device->CreateCommittedResource(
+		&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), // a default heap
+		D3D12_HEAP_FLAG_NONE, // no flags
+		&textureDesc, // the description of our texture
+		D3D12_RESOURCE_STATE_COPY_DEST, // We will copy the texture from the upload heap to here, so we start it out in a copy dest state
+		nullptr, // used for render targets and depth/stencil buffers
+		IID_PPV_ARGS(&textureBuffer));
+	if (FAILED(hr))
+	{
+		Running = false;
+		return false;
+	}
+	textureBuffer->SetName(L"Texture Buffer Resource Heap");
+
+	UINT64 textureUploadBufferSize;
+	// this function gets the size an upload buffer needs to be to upload a texture to the gpu.
+	// each row must be 256 byte aligned except for the last row, which can just be the size in bytes of the row
+	// eg. textureUploadBufferSize = ((((width * numBytesPerPixel) + 255) & ~255) * (height - 1)) + (width * numBytesPerPixel);
+	// textureUploadBufferSize = (((imageBytesPerRow + 255) & ~255) * (textureDesc.Height - 1)) + imageBytesPerRow;
+	device->GetCopyableFootprints(&textureDesc, 0, 1, 0, nullptr, nullptr, nullptr, &textureUploadBufferSize);
+
+	// now we create an upload heeap to upload our texture to the GPU
+	hr = device->CreateCommittedResource(
+		&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD), // upload heap
+		D3D12_HEAP_FLAG_NONE, // no flags
+		&CD3DX12_RESOURCE_DESC::Buffer(textureUploadBufferSize), // resource description for a buffer (storing the image data in this heap just to copy to the default heap)
+		D3D12_RESOURCE_STATE_GENERIC_READ, // We will copy the contents from this heap to the default heap above
+		nullptr,
+		IID_PPV_ARGS(&textureBufferUploadHeap));
+	if (FAILED(hr))
+	{
+		Running = false;
+		return false;
+	}
+	textureBufferUploadHeap->SetName(L"Texture Buffer Upload Resource Heap");
+
+	// store vertex buffer in upload heap
+	D3D12_SUBRESOURCE_DATA textureData = {};
+	textureData.pData = &imageData[0]; // pointer to our image data
+	textureData.RowPitch = imageBytesPerRow; // size of all our triangle vertex data
+	textureData.SlicePitch = imageBytesPerRow * textureDesc.Height; // also the size of our triangle vertex data
+
+	// Now we copy the upload buffer contents to the default heap
+	UpdateSubresources(commandList, textureBuffer, textureBufferUploadHeap, 0, 0, 1, &textureData);
+
+	// transition the texture default heap to a pixel shader resource (we will be sampling from this heap in the pixel shader to get the color of pixels)
+	commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(textureBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
+
+	// create the descriptor heap that will store our srv
+	D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+	heapDesc.NumDescriptors = 1;
+	heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+	heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+	hr = device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&mainDescriptorHeap));
+	if (FAILED(hr))
+	{
+		Running = false;
+	}
+	
+	// now we create a shader resource view (descriptor that points to the texture and describes it)
+	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srvDesc.Format = textureDesc.Format;
+	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srvDesc.Texture2D.MipLevels = 1;
+	device->CreateShaderResourceView(textureBuffer, &srvDesc, mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
+
 	// Now we execute the command list to upload the initial assets (triangle data)
 	commandList->Close();
 	ID3D12CommandList* ppCommandLists[] = { commandList };
@@ -738,7 +899,11 @@ bool InitD3D()
 	if (FAILED(hr))
 	{
 		Running = false;
+		return false;
 	}
+
+	// we are done with image data now that we've uploaded it to the gpu, so free it up
+	delete imageData;
 
 	//create a vertex buffer view for the triangle. We get the GPU memory address to the vertex pointer using the GetGPUVirtualAddress() method
 	vertexBufferView.BufferLocation = vertexBuffer->GetGPUVirtualAddress();
@@ -923,6 +1088,13 @@ void UpdatePipeline()
 	// set the root signature
 	commandList->SetGraphicsRootSignature(rootSignature); // set the root signature
 
+	// set descriptor heap
+	ID3D12DescriptorHeap* descriptorHeaps[] = { mainDescriptorHeap };
+	commandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
+
+	// set the descriptor table to the descriptor heap (parameter 1, as constant buffer root descriptor is parameter index 0)
+	commandList->SetGraphicsRootDescriptorTable(1, mainDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+
 	// draw triangle
 	commandList->RSSetViewports(1, &viewport); // set the viewports
 	commandList->RSSetScissorRects(1, &scissorRect); // set the scissor rects
@@ -1054,4 +1226,235 @@ void WaitForPreviousFrame()
 
 	// increment fenceValue for next frame
 	fenceValue[frameIndex]++;
+}
+
+// get the dxgi format equivilent of a wic format
+DXGI_FORMAT GetDXGIFormatFromWICFormat(WICPixelFormatGUID& wicFormatGUID)
+{
+	if (wicFormatGUID == GUID_WICPixelFormat128bppRGBAFloat) return DXGI_FORMAT_R32G32B32A32_FLOAT;
+	else if (wicFormatGUID == GUID_WICPixelFormat64bppRGBAHalf) return DXGI_FORMAT_R16G16B16A16_FLOAT;
+	else if (wicFormatGUID == GUID_WICPixelFormat64bppRGBA) return DXGI_FORMAT_R16G16B16A16_UNORM;
+	else if (wicFormatGUID == GUID_WICPixelFormat32bppRGBA) return DXGI_FORMAT_R8G8B8A8_UNORM;
+	else if (wicFormatGUID == GUID_WICPixelFormat32bppBGRA) return DXGI_FORMAT_B8G8R8A8_UNORM;
+	else if (wicFormatGUID == GUID_WICPixelFormat32bppBGR) return DXGI_FORMAT_B8G8R8X8_UNORM;
+	else if (wicFormatGUID == GUID_WICPixelFormat32bppRGBA1010102XR) return DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM;
+
+	else if (wicFormatGUID == GUID_WICPixelFormat32bppRGBA1010102) return DXGI_FORMAT_R10G10B10A2_UNORM;
+	else if (wicFormatGUID == GUID_WICPixelFormat16bppBGRA5551) return DXGI_FORMAT_B5G5R5A1_UNORM;
+	else if (wicFormatGUID == GUID_WICPixelFormat16bppBGR565) return DXGI_FORMAT_B5G6R5_UNORM;
+	else if (wicFormatGUID == GUID_WICPixelFormat32bppGrayFloat) return DXGI_FORMAT_R32_FLOAT;
+	else if (wicFormatGUID == GUID_WICPixelFormat16bppGrayHalf) return DXGI_FORMAT_R16_FLOAT;
+	else if (wicFormatGUID == GUID_WICPixelFormat16bppGray) return DXGI_FORMAT_R16_UNORM;
+	else if (wicFormatGUID == GUID_WICPixelFormat8bppGray) return DXGI_FORMAT_R8_UNORM;
+	else if (wicFormatGUID == GUID_WICPixelFormat8bppAlpha) return DXGI_FORMAT_A8_UNORM;
+
+	else return DXGI_FORMAT_UNKNOWN;
+}
+
+// get a dxgi compatible wic format from another wic format
+WICPixelFormatGUID GetConvertToWICFormat(WICPixelFormatGUID& wicFormatGUID)
+{
+	if (wicFormatGUID == GUID_WICPixelFormatBlackWhite) return GUID_WICPixelFormat8bppGray;
+	else if (wicFormatGUID == GUID_WICPixelFormat1bppIndexed) return GUID_WICPixelFormat32bppRGBA;
+	else if (wicFormatGUID == GUID_WICPixelFormat2bppIndexed) return GUID_WICPixelFormat32bppRGBA;
+	else if (wicFormatGUID == GUID_WICPixelFormat4bppIndexed) return GUID_WICPixelFormat32bppRGBA;
+	else if (wicFormatGUID == GUID_WICPixelFormat8bppIndexed) return GUID_WICPixelFormat32bppRGBA;
+	else if (wicFormatGUID == GUID_WICPixelFormat2bppGray) return GUID_WICPixelFormat8bppGray;
+	else if (wicFormatGUID == GUID_WICPixelFormat4bppGray) return GUID_WICPixelFormat8bppGray;
+	else if (wicFormatGUID == GUID_WICPixelFormat16bppGrayFixedPoint) return GUID_WICPixelFormat16bppGrayHalf;
+	else if (wicFormatGUID == GUID_WICPixelFormat32bppGrayFixedPoint) return GUID_WICPixelFormat32bppGrayFloat;
+	else if (wicFormatGUID == GUID_WICPixelFormat16bppBGR555) return GUID_WICPixelFormat16bppBGRA5551;
+	else if (wicFormatGUID == GUID_WICPixelFormat32bppBGR101010) return GUID_WICPixelFormat32bppRGBA1010102;
+	else if (wicFormatGUID == GUID_WICPixelFormat24bppBGR) return GUID_WICPixelFormat32bppRGBA;
+	else if (wicFormatGUID == GUID_WICPixelFormat24bppRGB) return GUID_WICPixelFormat32bppRGBA;
+	else if (wicFormatGUID == GUID_WICPixelFormat32bppPBGRA) return GUID_WICPixelFormat32bppRGBA;
+	else if (wicFormatGUID == GUID_WICPixelFormat32bppPRGBA) return GUID_WICPixelFormat32bppRGBA;
+	else if (wicFormatGUID == GUID_WICPixelFormat48bppRGB) return GUID_WICPixelFormat64bppRGBA;
+	else if (wicFormatGUID == GUID_WICPixelFormat48bppBGR) return GUID_WICPixelFormat64bppRGBA;
+	else if (wicFormatGUID == GUID_WICPixelFormat64bppBGRA) return GUID_WICPixelFormat64bppRGBA;
+	else if (wicFormatGUID == GUID_WICPixelFormat64bppPRGBA) return GUID_WICPixelFormat64bppRGBA;
+	else if (wicFormatGUID == GUID_WICPixelFormat64bppPBGRA) return GUID_WICPixelFormat64bppRGBA;
+	else if (wicFormatGUID == GUID_WICPixelFormat48bppRGBFixedPoint) return GUID_WICPixelFormat64bppRGBAHalf;
+	else if (wicFormatGUID == GUID_WICPixelFormat48bppBGRFixedPoint) return GUID_WICPixelFormat64bppRGBAHalf;
+	else if (wicFormatGUID == GUID_WICPixelFormat64bppRGBAFixedPoint) return GUID_WICPixelFormat64bppRGBAHalf;
+	else if (wicFormatGUID == GUID_WICPixelFormat64bppBGRAFixedPoint) return GUID_WICPixelFormat64bppRGBAHalf;
+	else if (wicFormatGUID == GUID_WICPixelFormat64bppRGBFixedPoint) return GUID_WICPixelFormat64bppRGBAHalf;
+	else if (wicFormatGUID == GUID_WICPixelFormat64bppRGBHalf) return GUID_WICPixelFormat64bppRGBAHalf;
+	else if (wicFormatGUID == GUID_WICPixelFormat48bppRGBHalf) return GUID_WICPixelFormat64bppRGBAHalf;
+	else if (wicFormatGUID == GUID_WICPixelFormat128bppPRGBAFloat) return GUID_WICPixelFormat128bppRGBAFloat;
+	else if (wicFormatGUID == GUID_WICPixelFormat128bppRGBFloat) return GUID_WICPixelFormat128bppRGBAFloat;
+	else if (wicFormatGUID == GUID_WICPixelFormat128bppRGBAFixedPoint) return GUID_WICPixelFormat128bppRGBAFloat;
+	else if (wicFormatGUID == GUID_WICPixelFormat128bppRGBFixedPoint) return GUID_WICPixelFormat128bppRGBAFloat;
+	else if (wicFormatGUID == GUID_WICPixelFormat32bppRGBE) return GUID_WICPixelFormat128bppRGBAFloat;
+	else if (wicFormatGUID == GUID_WICPixelFormat32bppCMYK) return GUID_WICPixelFormat32bppRGBA;
+	else if (wicFormatGUID == GUID_WICPixelFormat64bppCMYK) return GUID_WICPixelFormat64bppRGBA;
+	else if (wicFormatGUID == GUID_WICPixelFormat40bppCMYKAlpha) return GUID_WICPixelFormat64bppRGBA;
+	else if (wicFormatGUID == GUID_WICPixelFormat80bppCMYKAlpha) return GUID_WICPixelFormat64bppRGBA;
+
+#if (_WIN32_WINNT >= _WIN32_WINNT_WIN8) || defined(_WIN7_PLATFORM_UPDATE)
+	else if (wicFormatGUID == GUID_WICPixelFormat32bppRGB) return GUID_WICPixelFormat32bppRGBA;
+	else if (wicFormatGUID == GUID_WICPixelFormat64bppRGB) return GUID_WICPixelFormat64bppRGBA;
+	else if (wicFormatGUID == GUID_WICPixelFormat64bppPRGBAHalf) return GUID_WICPixelFormat64bppRGBAHalf;
+#endif
+
+	else return GUID_WICPixelFormatDontCare;
+}
+
+// get the number of bits per pixel for a dxgi format
+int GetDXGIFormatBitsPerPixel(DXGI_FORMAT& dxgiFormat)
+{
+	if (dxgiFormat == DXGI_FORMAT_R32G32B32A32_FLOAT) return 128;
+	else if (dxgiFormat == DXGI_FORMAT_R16G16B16A16_FLOAT) return 64;
+	else if (dxgiFormat == DXGI_FORMAT_R16G16B16A16_UNORM) return 64;
+	else if (dxgiFormat == DXGI_FORMAT_R8G8B8A8_UNORM) return 32;
+	else if (dxgiFormat == DXGI_FORMAT_B8G8R8A8_UNORM) return 32;
+	else if (dxgiFormat == DXGI_FORMAT_B8G8R8X8_UNORM) return 32;
+	else if (dxgiFormat == DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM) return 32;
+
+	else if (dxgiFormat == DXGI_FORMAT_R10G10B10A2_UNORM) return 32;
+	else if (dxgiFormat == DXGI_FORMAT_B5G5R5A1_UNORM) return 16;
+	else if (dxgiFormat == DXGI_FORMAT_B5G6R5_UNORM) return 16;
+	else if (dxgiFormat == DXGI_FORMAT_R32_FLOAT) return 32;
+	else if (dxgiFormat == DXGI_FORMAT_R16_FLOAT) return 16;
+	else if (dxgiFormat == DXGI_FORMAT_R16_UNORM) return 16;
+	else if (dxgiFormat == DXGI_FORMAT_R8_UNORM) return 8;
+	else if (dxgiFormat == DXGI_FORMAT_A8_UNORM) return 8;
+}
+
+// load and decode image from file
+int LoadImageDataFromFile(BYTE** imageData, D3D12_RESOURCE_DESC& resourceDescription, LPCWSTR filename, int &bytesPerRow)
+{
+	HRESULT hr;
+
+	// we only need one instance of the imaging factory to create decoders and frames
+	static IWICImagingFactory* wicFactory;
+
+	// reset decoder, frame and converter since these will be different for each image we load
+	IWICBitmapDecoder* wicDecoder = NULL;
+	IWICBitmapFrameDecode* wicFrame = NULL;
+	IWICFormatConverter* wicConverter = NULL;
+
+	bool imageConverted = false;
+
+	if (wicFactory == NULL)
+	{
+		// Initialize the COM library
+		CoInitialize(NULL);
+
+		// create the WIC factory
+		hr = CoCreateInstance(
+			CLSID_WICImagingFactory,
+			NULL,
+			CLSCTX_INPROC_SERVER,
+			IID_PPV_ARGS(&wicFactory));
+		if (FAILED(hr))
+			return 0;
+	}
+
+	// load a decoder for the image
+	hr = wicFactory->CreateDecoderFromFilename(
+		filename, // Image we want to load in
+		NULL, // This is a vendor ID, we do not prefer a specific one so set to null
+		GENERIC_READ, // We want to read from this file
+		WICDecodeMetadataCacheOnLoad, // We will cache the metadata right away, rather that when needed, which might be unknown
+		&wicDecoder // the wic decoder to be created
+	);
+	if (FAILED(hr))
+		return 0;
+
+	// get image from decoder (this will decode the "frame")
+	hr = wicDecoder->GetFrame(0, &wicFrame);
+	if (FAILED(hr))
+		return 0;
+
+	// get wic pixel format of image
+	WICPixelFormatGUID pixelFormat;
+	hr = wicFrame->GetPixelFormat(&pixelFormat);
+	if (FAILED(hr))
+		return 0;
+
+	// get size of image
+	UINT textureWidth, textureHeight;
+	hr = wicFrame->GetSize(&textureWidth, &textureHeight);
+	if (FAILED(hr))
+		return 0;
+
+	// we are not handling sRBG types in this tutorial, so if we need that support, we'll have to figure
+	// out how to implement the support yourself
+
+	// convert wic pixel format to dxgi pixel format
+	DXGI_FORMAT dxgiFormat = GetDXGIFormatFromWICFormat(pixelFormat);
+
+	// if the format of the image is not a supported dxgi format, try to convert it
+	if (dxgiFormat == DXGI_FORMAT_UNKNOWN)
+	{
+		// get a dxgi compatible wic format from the current image format
+		WICPixelFormatGUID convertToPixelFormat = GetConvertToWICFormat(pixelFormat);
+
+		// return if no dxgi compatible format was found
+		if (convertToPixelFormat == GUID_WICPixelFormatDontCare)
+			return 0;
+
+		// set the dxgi format
+		dxgiFormat = GetDXGIFormatFromWICFormat(convertToPixelFormat);
+
+		// create the format converter
+		hr = wicFactory->CreateFormatConverter(&wicConverter);
+		if (FAILED(hr))
+			return 0;
+
+		// make sure we can convert to the dxgi compatible format
+		BOOL canConvert = FALSE;
+		hr = wicConverter->CanConvert(pixelFormat, convertToPixelFormat, &canConvert);
+		if (FAILED(hr) || !canConvert)
+			return 0;
+
+		// do the conversion (wicConverter will contain the converted image)
+		hr = wicConverter->Initialize(wicFrame, convertToPixelFormat, WICBitmapDitherTypeErrorDiffusion, 0, 0, WICBitmapPaletteTypeCustom);
+		if (FAILED(hr))
+			return 0;
+
+		// this is so we know to get the image data from the wicConverter (otherwise we will get from wicFrame)
+		imageConverted = true;
+	}
+
+	int bitsPerPixel = GetDXGIFormatBitsPerPixel(dxgiFormat); // number of bits per pixel
+	bytesPerRow = (textureWidth * bitsPerPixel) / 8; // number of bytes in each row of the image data
+	int imageSize = bytesPerRow * textureHeight; // total image size in bytes
+
+	// allocate enough memory for the raw image data, and set imageData to point to that memory
+	*imageData = (BYTE*)malloc(imageSize);
+
+	// copy (decoded) raw image data into the newly allocated memory (imageData)
+	if (imageConverted)
+	{
+		// if image format needed to be converted, the wic converter will contain the converted image
+		hr = wicConverter->CopyPixels(0, bytesPerRow, imageSize, *imageData);
+		if (FAILED(hr))
+			return 0;
+	}
+	else
+	{
+		// no need to convert, just copy data from the wic frame
+		hr = wicFrame->CopyPixels(0, bytesPerRow, imageSize, *imageData);
+		if (FAILED(hr))
+			return 0;
+	}
+
+	// now describe the texture with the information we have obtained from the image
+	resourceDescription = {};
+	resourceDescription.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	resourceDescription.Alignment = 0; // may be 0, 4KB, 64KB, or 4MB. 0 will let runtime decide between 64KB and 4MB (4MB for multi-sampled textures)
+	resourceDescription.Width = textureWidth; // width of the texture
+	resourceDescription.Height = textureHeight; // height of the texture
+	resourceDescription.DepthOrArraySize = 1; // if 3d image, depth of 3d image. Otherwise an array of 1D or 2D textures (we only have one image, so we set 1)
+	resourceDescription.MipLevels = 1; // Number of mipmaps. We are not generating mipmaps for this texture, so we have only one level
+	resourceDescription.Format = dxgiFormat; // This is the dxgi format of the image (format of the pixels)
+	resourceDescription.SampleDesc.Count = 1; // This is the number of samples per pixel, we just want 1 sample
+	resourceDescription.SampleDesc.Quality = 0; // The quality level of the samples. Higher is better quality, but worse performance
+	resourceDescription.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN; // The arrangement of the pixels. Setting to unknown lets the driver choose the most efficient one
+	resourceDescription.Flags = D3D12_RESOURCE_FLAG_NONE; // no flags
+
+	// return the size of the image. remember to delete the image once your done with it (in this tutorial once its uploaded to the gpu)
+	return imageSize;
 }
